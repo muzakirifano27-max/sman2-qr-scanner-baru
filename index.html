@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scanner QR - SMAN 2 Payakumbuh</title>
+
+  <script src="https://unpkg.com/html5-qrcode"></script>
+
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: Arial, sans-serif;
+      background: #f1f5f9;
+      color: #1e293b;
+    }
+
+    .container {
+      max-width: 500px;
+      margin: 20px auto;
+      padding: 22px;
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 4px 18px #00000012;
+    }
+
+    h2 { margin-top: 0; }
+    .muted { color: #64748b; font-size: 14px; }
+
+    #reader {
+      width: 100%;
+      margin: 20px auto;
+      overflow: hidden;
+      border-radius: 12px;
+    }
+
+    button {
+      width: 100%;
+      padding: 13px;
+      margin: 6px 0;
+      border: 0;
+      border-radius: 9px;
+      font-size: 15px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    .start { background: #2563eb; color: white; }
+    .stop { background: #dc2626; color: white; }
+    .status {
+      padding: 12px;
+      margin-top: 12px;
+      border-radius: 9px;
+      background: #eff6ff;
+      overflow-wrap: anywhere;
+      font-size: 14px;
+    }
+
+    .success { background: #dcfce7; color: #166534; }
+    .error { background: #fee2e2; color: #991b1b; }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h2>📷 Scanner QR Absensi</h2>
+    <p class="muted">SMAN 2 Payakumbuh</p>
+
+    <div id="reader"></div>
+
+    <button class="start" onclick="startCamera()">
+      ▶️ Mulai Kamera
+    </button>
+
+    <button class="stop" onclick="stopCamera()">
+      ⏹️ Hentikan Kamera
+    </button>
+
+    <div id="status" class="status">
+      Scanner siap. Tekan Mulai Kamera.
+    </div>
+  </div>
+
+  <script>
+    let scanner = null;
+    let cameraRunning = false;
+    let lastQr = "";
+    let lastQrTime = 0;
+    let waitingAck = false;
+
+    const statusBox = document.getElementById("status");
+
+    // Pastikan halaman dibuka dari aplikasi utama.
+    function getParentOrigin() {
+      if (!document.referrer) return "";
+
+      try {
+        return new URL(document.referrer).origin;
+      } catch (e) {
+        return "";
+      }
+    }
+
+    const parentOrigin = getParentOrigin();
+
+    function showStatus(message, type = "") {
+      statusBox.className = "status " + type;
+      statusBox.textContent = message;
+    }
+
+    function getGps() {
+      return new Promise(resolve => {
+        if (!navigator.geolocation) {
+          resolve(null);
+          return;
+        }
+
+        navigator.geolocation.getCurrentPosition(
+          pos => resolve({
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            accuracy: pos.coords.accuracy
+          }),
+          () => resolve(null),
+          {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 5000
+          }
+        );
+      });
+    }
+
+    async function startCamera() {
+      if (cameraRunning) return;
+
+      if (!window.opener || window.opener.closed) {
+        showStatus(
+          "Aplikasi utama tidak terhubung. Buka scanner dari tombol Mulai Scanner di aplikasi absensi.",
+          "error"
+        );
+        return;
+      }
+
+      if (!parentOrigin) {
+        showStatus(
+          "Alamat aplikasi utama tidak terdeteksi. Buka scanner melalui aplikasi absensi.",
+          "error"
+        );
+        return;
+      }
+
+      if (!window.Html5Qrcode) {
+        showStatus(
+          "Library scanner gagal dimuat. Periksa koneksi internet lalu muat ulang halaman.",
+          "error"
+        );
+        return;
+      }
+
+      try {
+        scanner = new Html5Qrcode("reader");
+
+        showStatus("Meminta izin kamera...");
+
+        await scanner.start(
+          { facingMode: "environment" },
+          {
+            fps: 10,
+            qrbox: { width: 230, height: 230 },
+            aspectRatio: 1
+          },
+          onQrDetected,
+          () => {}
+        );
+
+        cameraRunning = true;
+        showStatus("Kamera aktif. Arahkan QR siswa ke kotak pemindai.");
+      } catch (e) {
+        cameraRunning = false;
+        showStatus(
+          "Kamera gagal dibuka: " + (e.message || e) +
+          ". Periksa izin kamera browser.",
+          "error"
+        );
+      }
+    }
+
+    async function onQrDetected(decodedText) {
+      const qr = String(decodedText || "").trim();
+      const now = Date.now();
+
+      if (!qr || waitingAck) return;
+      if (qr === lastQr && now - lastQrTime < 3000) return;
+
+      lastQr = qr;
+      lastQrTime = now;
+      waitingAck = true;
+
+      showStatus("QR terbaca. Mengirim ke aplikasi absensi...");
+
+      const gps = await getGps();
+
+      try {
+        if (!window.opener || window.opener.closed) {
+          throw new Error("Jendela aplikasi utama sudah tertutup.");
+        }
+
+        window.opener.postMessage({
+          type: "SMAN2_QR_SCAN_V7",
+          qr: qr,
+          gps: gps
+        }, parentOrigin);
+
+        showStatus("QR dikirim. Menunggu hasil verifikasi aplikasi...");
+      } catch (e) {
+        waitingAck = false;
+        showStatus(e.message || "Gagal mengirim QR.", "error");
+      }
+    }
+
+    // Menerima jawaban dari aplikasi utama.
+    window.addEventListener("message", function(event) {
+      if (event.origin !== parentOrigin) return;
+
+      const data = event.data;
+      if (!data || data.type !== "SMAN2_QR_RESULT_V7") return;
+
+      waitingAck = false;
+
+      if (data.ok) {
+        showStatus(
+          data.duplicate
+            ? "QR berhasil diproses, tetapi terdeteksi sebagai scan duplikat."
+            : "✅ QR berhasil diproses oleh aplikasi absensi.",
+          "success"
+        );
+      } else {
+        showStatus(
+          "QR belum berhasil: " + (data.error || "Tidak dapat diproses."),
+          "error"
+        );
+      }
+    });
+
+    async function stopCamera() {
+      if (!scanner || !cameraRunning) {
+        showStatus("Kamera sudah berhenti.");
+        return;
+      }
+
+      try {
+        await scanner.stop();
+        scanner.clear();
+        cameraRunning = false;
+        waitingAck = false;
+        showStatus("Kamera dihentikan.");
+      } catch (e) {
+        showStatus("Kamera gagal dihentikan: " + e.message, "error");
+      }
+    }
+
+    window.addEventListener("beforeunload", function() {
+      if (scanner && cameraRunning) {
+        scanner.stop().catch(() => {});
+      }
+    });
+  </script>
+</body>
+</html>
