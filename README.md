@@ -1,0 +1,1 @@
+# sman2-qr-scanner-baru
